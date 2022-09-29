@@ -1,4 +1,4 @@
-# esc-falcon
+# Elastic Smart Contract Falcon
 
 This repository supports the development/operation of Elastic Smart Contracts in the Hyperledger Fabric Blockchain being integrated with Falcon.
 
