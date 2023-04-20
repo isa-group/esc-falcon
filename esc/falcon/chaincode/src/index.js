@@ -18,8 +18,8 @@ class analytics_chaincode extends Contract {
     * @async
     * @param {number} responseData - The id of the data to get.
     */
-     async queryData(ctx, responseData) {
-    
+    async queryData(ctx, responseData) {
+
         let queryString = `{
             "selector": {
                 "responseData": {
@@ -28,7 +28,7 @@ class analytics_chaincode extends Contract {
             }
         }`;
         return this.queryWithQueryString(ctx, queryString);
-    
+
     }
 
     /**
@@ -36,13 +36,13 @@ class analytics_chaincode extends Contract {
     * @async
     */
     async createData(ctx) {
-        
-    
+
+
         const data = {
             responseData: 1,
             responses: [],
         };
-    
+
         await ctx.stub.putState('DATA1', Buffer.from(JSON.stringify(data)));
     }
 
@@ -51,7 +51,7 @@ class analytics_chaincode extends Contract {
     * @async
     */
     async queryDataCalculation(ctx, dataId) {
-    
+
         let queryString = `{
             "selector": {
                 "dataId": {
@@ -60,7 +60,7 @@ class analytics_chaincode extends Contract {
             }
         }`;
         return this.queryWithQueryString(ctx, queryString);
-    
+
     }
 
     /**
@@ -68,13 +68,13 @@ class analytics_chaincode extends Contract {
     * @async
     */
     async createDataCalculation(ctx) {
-        
-    
+
+
         const dataCalculation = {
             dataId: 1,
             data: [],
         };
-    
+
         await ctx.stub.putState('DATACALCULATION1', Buffer.from(JSON.stringify(dataCalculation)));
     }
 
@@ -88,22 +88,22 @@ class analytics_chaincode extends Contract {
 
         let parameters = JSON.parse(params.toString())
         let s = await this.queryData(ctx, parseInt(parameters.dataNumber));
-        let data = JSON.parse(s.toString())[0];
+        let data = s[0];
         let det = JSON.parse(parameters.data);
         let time = Date.now();
         data.Record.responses = data.Record.responses.filter((i) => {
-            return i.dataCollectedDateTime >= (time - parameters.timeData*1000 - 10000);
+            return i.dataCollectedDateTime >= (time - parameters.timeData * 1000 - 10000);
         });
-        if(data.Record.responses.length < 240){
+        if (data.Record.responses.length < 240) {
             for (let j = 0; j < parameters.dataPerHarvest; j++) {
-                for(let i = 0; i < det.length; i++){
+                for (let i = 0; i < det.length; i++) {
                     data.Record.responses.push(det[i]);
                 }
             }
         }
 
         // data.Record.responses = [det[det.length-1]];
-        
+
 
         await ctx.stub.putState(data.Key, Buffer.from(JSON.stringify(data.Record)));
 
@@ -117,6 +117,7 @@ class analytics_chaincode extends Contract {
             endTime: endTime,
             totalTime: endTime - time,
             updateDataID: parameters.updateDataID,
+            collectorRequestTime: parameters.collectorRequestTime,
         };
         await ctx.stub.setEvent('UpdateDataEvent', Buffer.from(JSON.stringify(event)));
 
@@ -129,7 +130,7 @@ class analytics_chaincode extends Contract {
     * @param {object} params - An object with all the parameters necessary which are the calculation storage, the dates from which collect data
     * to analyse it, the data number, the current time window for the data and the current frequency.
     */
-     async analysis(ctx, params) {
+    async analysis(ctx, params) {
         const vm = require('vm');
 
         let totalBeginHR = process.hrtime();
@@ -147,57 +148,146 @@ class analytics_chaincode extends Contract {
 
         let totalNumbersEvent = [];
         let guaranteesValues = {};
-        if(frmDates.length > 0){
+        if (frmDates.length > 0) {
 
-            for(let j=1; j<=numData; j++){
+            for (let j = 1; j <= numData; j++) {
                 let dataResponse = await this.queryData(ctx, j);
-                data.push(JSON.parse(dataResponse.toString())[0]);
+                data.push(dataResponse[0]);
             }
-    
-            for(let k=0; k<frmDates.length; k++){
-                let fromDate = frmDates[k];
-                let toDate = fromDate - (1000* parameters.timeData);
 
-                var responses = [0,0];
-                
-                for(let l=0;l<data.length; l++){
+            for (let k = 0; k < frmDates.length; k++) {
+                let fromDate = frmDates[k];
+                let toDate = fromDate - (1000 * parameters.timeData);
+
+                var agreement = data[0].Record.responses[0].agreement;
+                var metricValuesAux = [];
+
+                for (let l = 0; l < data.length; l++) {
                     totalNumbersStored += data[l].Record.responses.length;
 
-                    if(!data[l].Record.responses[0]){
+                    if (!data[l].Record.responses[0]) {
                         console.log("No metrics stored");
                         return;
                     }
 
-                    for(let m=0; m<data[l].Record.responses.length; m++){
-                        responses[0] += data[l].Record.responses[m].metricValues.goodResponses;
-                        responses[1] += data[l].Record.responses[m].metricValues.badResponses;
+                    for (let m = 0; m < data[l].Record.responses.length; m++) {
+                        metricValuesAux.push(data[l].Record.responses[m].responses[0]);
                     }
                 }
 
-                    let numberResponses = 0;
+                let metricsReduced = metricValuesAux.reduce((acc, curr) => {
+                    Object.entries(curr).forEach(([key, value]) => {
+                        acc[key] = acc[key] || [];
+                        acc[key].push(parseInt(value.value));
+                    });
+                    return acc;
+                }, {});
 
-                    bySection.push(parseFloat(((numberResponses *1000) /  (fromDate - toDate)).toFixed(3)));
-                    total += parseFloat(((numberResponses *1000) /  (fromDate - toDate)).toFixed(3));
-                    totalNumbers += numberResponses;
+
+                let metricValues = {};
+                for (let key in metricsReduced) {
+                    metricValues[key] = metricsReduced[key].reduce((a, b) => a + b, 0) / metricsReduced[key].length;
                 }
-                totalNumbersStoredList.push(totalNumbersStored);
-                totalNumbersEvent.push(totalNumbers);
-                bySection = [];
-                totalNumbers = 0;
-                total = 0;
-                totalNumbersStored = 0;
+
+                var timedScopes = data[0].Record.responses[0].timedScopes
+
+                let numberResponses = 0;
+
+                function calculatePenalty(guarantee, timedScope, metricsValues, slo, penalties) {
+                    const guaranteeValue = {};
+                    const ofElement = guarantee.of[0]
+                    guaranteeValue.scope = timedScope.scope;
+                    guaranteeValue.period = timedScope.period;
+                    guaranteeValue.guarantee = guarantee.id;
+                    guaranteeValue.evidences = [];
+                    guaranteeValue.metrics = {};
+                    const values = [];
+                    var penalties = {};
+
+                    for (const metricId in ofElement.with) {
+                        let value = 0;
+                        if (metricsValues[metricId]) {
+                            value = metricsValues[metricId];
+                        }
+                        if (value === 'NaN' || value === '') {
+                            console.log('Unexpected value (' + value + ') for metric ' + metricId + ' ');
+                            return;
+                        }
+                        vm.runInThisContext(metricId + ' = ' + value);
+                        guaranteeValue.metrics[metricId] = value;
+                        if (metricsValues[metricId] && metricsValues[metricId].evidences) {
+                            guaranteeValue.evidences = guaranteeValue.evidences.concat(metricsValues[metricId].evidences);
+                        } else {
+                            console.log('Metric without evidences: ' + JSON.stringify(metricsValues[metricId], null, 2));
+                        }
+
+                        const val = {};
+                        val[metricId] = value;
+                        values.push(val);
+                    }
+
+                    const fulfilled = Boolean(vm.runInThisContext(slo));
+                    guaranteeValue.value = fulfilled;
+
+                    if (!fulfilled && penalties.length > 0) {
+                        guaranteeValue.penalties = {};
+                        penalties.forEach(function (penalty) {
+                            const penaltyVar = Object.keys(penalty.over)[0];
+                            const penaltyFulfilled = penalty.of.filter(function (compensationOf) {
+                                return vm.runInThisContext(compensationOf.condition);
+                            });
+                            if (penaltyFulfilled.length > 0) {
+                                guaranteeValue.penalties[penaltyVar] = parseFloat(vm.runInThisContext(penaltyFulfilled[0].value));
+                            } else {
+                                guaranteeValue.penalties[penaltyVar] = 0;
+                                console.log('SLO not fulfilled and no penalty found: ');
+                                console.log('\t- penalty: ', penalty.of);
+                                console.log('\t- metric value: ', values);
+                            }
+                        });
+                    }
+                    return guaranteeValue;
+                }
+
+                agreement.terms.guarantees.map((guarantee) => {
+                    if (guarantee.of[0].reliable) {
+                        let guaranteeValues = [];
+                        for (let index = 0; index < timedScopes.length; index++) {
+                            let guaranteeValue = calculatePenalty(guarantee, timedScopes[index], metricValues, guarantee.of[0].objective, guarantee.of[0].penalties)
+                            if (guaranteeValue) {
+                                guaranteeValues.push(guaranteeValue);
+                            }
+                        }
+                        guaranteesValues[guarantee.id] = guaranteeValues;
+                    }
+                })
+                bySection.push(parseFloat(((numberResponses * 1000) / (fromDate - toDate)).toFixed(3)));
+                total += parseFloat(((numberResponses * 1000) / (fromDate - toDate)).toFixed(3));
+                totalNumbers += numberResponses;
+            }
+            totalNumbersStoredList.push(totalNumbersStored);
+            totalNumbersEvent.push(totalNumbers);
+            bySection = [];
+            totalNumbers = 0;
+            total = 0;
+            totalNumbersStored = 0;
 
         }
         let totalEndHR = process.hrtime(totalBeginHR)
-        let totalDuration = (totalEndHR[0]* 1000000000 + totalEndHR[1]) / 1000000;
+        let totalDuration = (totalEndHR[0] * 1000000000 + totalEndHR[1]) / 1000000;
 
-        if (frmDates.length == 0){
+        if (frmDates.length == 0) {
             totalDuration = 0;
         }
 
-        let percentageOf200StatusCode = responses[0]/(responses[0]+responses[1]);
+        let finalMetricValues = "";
+        let finalGuaranteesValues = "";
+        for (let [key, value] of Object.entries(guaranteesValues)) {
+            finalMetricValues += JSON.stringify(value[0].metrics);
+            finalGuaranteesValues += key + ": " + JSON.stringify(value[0].value);
+        }
 
-        let info = [[analysisID],[percentageOf200StatusCode]];
+        let info = [[analysisID], [Object.keys(guaranteesValues).length], [finalMetricValues], [finalGuaranteesValues]];
 
         let event = {
             execDuration: totalDuration,
@@ -209,9 +299,14 @@ class analytics_chaincode extends Contract {
             totalDataStoredList: totalNumbersStoredList,
             info: info
         };
-        
+
+        let s = await this.queryDataCalculation(ctx, 1);
+        let data2 = s[0];
+        data2.Record.responses = [guaranteesValues];
+
+        await ctx.stub.putState(data2.Key, Buffer.from(JSON.stringify(data2.Record)));
         await ctx.stub.setEvent('FlowEvent', Buffer.from(JSON.stringify(event)));
-      }
+    }
 
     /**
     * Evaluates the current calculation time and reajust the time window for data if necessary.
@@ -221,16 +316,16 @@ class analytics_chaincode extends Contract {
     * @param {number} maxCalculateTime - Maximum calculation time allowed.
     * @param {number} minCalculateTime - Minimum calculation time allowed.
     */
-     async evaluateHistory(ctx, timeData, calculateTime, maxCalculateTime, minCalculateTime) {
-        
-        if(parseFloat(calculateTime) >= parseFloat(maxCalculateTime)){
-            return JSON.parse(parseFloat(timeData)*0.75);
-        }else if(parseFloat(calculateTime) <= parseFloat(minCalculateTime)){
-            return JSON.parse(parseFloat(timeData)*1.25);
-        }else{
+    async evaluateHistory(ctx, timeData, calculateTime, maxCalculateTime, minCalculateTime) {
+
+        if (parseFloat(calculateTime) >= parseFloat(maxCalculateTime)) {
+            return JSON.parse(parseFloat(timeData) * 0.75);
+        } else if (parseFloat(calculateTime) <= parseFloat(minCalculateTime)) {
+            return JSON.parse(parseFloat(timeData) * 1.25);
+        } else {
             return JSON.parse(timeData);
         }
-    
+
     }
 
     /**
@@ -242,59 +337,40 @@ class analytics_chaincode extends Contract {
     * @param {number} minCalculateTime - Minimum calculation time allowed.
     */
     async evaluateFrequency(ctx, frequency, calculateTime, maxCalculateTime, minCalculateTime) {
-        
-        if(parseFloat(calculateTime) >= parseFloat(maxCalculateTime)*0.9){
-            return JSON.parse(parseFloat(frequency)*1.25);
-        }else if(parseFloat(calculateTime) <= parseFloat(minCalculateTime)*1.1){
-            return JSON.parse(parseFloat(frequency)*0.75);
-        }else{
+
+        if (parseFloat(calculateTime) >= parseFloat(maxCalculateTime) * 0.9) {
+            return JSON.parse(parseFloat(frequency) * 1.25);
+        } else if (parseFloat(calculateTime) <= parseFloat(minCalculateTime) * 1.1) {
+            return JSON.parse(parseFloat(frequency) * 0.75);
+        } else {
             return JSON.parse(frequency);
         }
-    
+
     }
-    
+
     /**
     * Auxiliary function to query the blockchain.
     * @async
     * @param {string} queryString - Query to process.
     */
     async queryWithQueryString(ctx, queryString) {
-    
-        console.log('query String');
-        console.log(JSON.stringify(queryString));
-    
-        let resultsIterator = await ctx.stub.getQueryResult(queryString);
-    
-        let allResults = [];
-    
-        while (true) {
-            let res = await resultsIterator.next();
-    
-            if (res.value && res.value.value.toString()) {
-                let jsonRes = {};
-    
-                console.log(res.value.value.toString('utf8'));
-    
-                jsonRes.Key = res.value.key;
-    
-                try {
-                    jsonRes.Record = JSON.parse(res.value.value.toString('utf8'));
-                } catch (err) {
-                    console.log(err);
-                    jsonRes.Record = res.value.value.toString('utf8');
-                }
-    
-                allResults.push(jsonRes);
+
+        let resultsIterator = ctx.stub.getQueryResult(queryString);
+
+        const allResults = [];
+        for await (const res of resultsIterator) {
+            let jsonRes = {};
+            jsonRes.Key = res.key;
+            try {
+                jsonRes.Record = JSON.parse(res.value.toString('utf8'));
+            } catch (err) {
+                console.log(err);
+                jsonRes.Record = res.value.toString('utf8');
             }
-            if (res.done) {
-                console.log('end of data');
-                await resultsIterator.close();
-                console.info(allResults);
-                console.log(JSON.stringify(allResults));
-                return JSON.stringify(allResults);
-            }
+            allResults.push(jsonRes);
         }
-    
+
+        return allResults;
     }
 
 
