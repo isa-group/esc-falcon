@@ -209,7 +209,7 @@ function getComputationV2 (infrastructurePath, computationURL, ttl) {
           }
         }).catch(err => {
           if (err?.response?.status === 400) {
-            logger.error('Failed obtaining computations from collector: ' + err.response.data.errorMessage + '\nCollector used: ' + infrastructurePath + '\nEndpoint: ' + computationURL);
+            logger.error('Failed obtaining computations from collector: ' + err.response.data.message + '\nCollector used: ' + infrastructurePath + '\nEndpoint: ' + computationURL);
             resolve([]);
           } else {
             logger.error('Error when obtaining computation response from collector: ', infrastructurePath, ' - ComputationURL: ', computationURL, '- ERROR: ', err);
