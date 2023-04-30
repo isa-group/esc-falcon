@@ -5,7 +5,7 @@ const JSONStream = require('JSONStream');
 const governify = require('governify-commons');
 const logger = governify.getLogger().tag('index');
 const diff = require('deep-diff');
-const { configuration } = require("./config");
+const configuration = require("./config.json");
 
 let config = configuration;
 
