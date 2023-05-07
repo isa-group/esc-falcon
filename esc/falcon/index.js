@@ -6,6 +6,7 @@ const governify = require('governify-commons');
 const logger = governify.getLogger().tag('index');
 const diff = require('deep-diff');
 const configuration = require("./config.json");
+const axios = require('axios');
 
 let config = configuration;
 
@@ -71,17 +72,11 @@ async function hookData(metricQueries, agreement){
         }).on('end', function () {
             resolve();
         });
-      }else if(metricQuery.collector.type === 'POST-GET-V1'){
-        const requestMetric = await governify.infrastructure.getService(collector.infrastructurePath).request({
-          url: collector.endpoint,
-          method: 'POST',
-          data: { config: collector.config, metric: urlParams }
-        }).catch(err => {
-          const errorString = 'Error in Collector response ' + err.response.status + ':' + err.response.data;
-          logger.error(errorString)
-        });
-        const collectorResponse = requestMetric.data;
-        const monthMetrics = await getComputationV2(collector.infrastructurePath, '/' + collectorResponse.computation.replace(/^\//, ''), 60000).catch(err => {
+      }else if(metricQuery.collector.type === 'POST-GET-V1'){        
+        const endpoint = 'http://localhost:6200/api/v1/states?';
+        let agreementId = agreement.id.replace(/ans\d*$/, "ans");
+        const params = `download=false&stateType=metrics&agreementId=${agreementId}&startDate=${urlParams.window.initial}&endDate=${urlParams.window.end}`;
+        const monthMetrics = await getMetrics(endpoint + params, 60000).catch(err => {
           const errorString = 'Error obtaining computation from computer: (' + err + ')';
           logger.error(errorString)
         });
@@ -100,6 +95,10 @@ async function hookData(metricQueries, agreement){
               }
               // aggregate metrics in order to return all
               metricState.id = metric
+              metricState.period = {
+                from: urlParams.window.initial,
+                to: urlParams.window.end
+              }
               compositeResponse.push(metricState);
             });
             resolve();
@@ -130,12 +129,6 @@ async function hookData(metricQueries, agreement){
       } else {
         logger.debug('TimedScope already exists in array index: ', tsIndex);
       }
-
-      let totalValueEvidences = 0;
-      for (let evIndex = 0; evIndex < metricValue.evidences.length; evIndex++) {
-        totalValueEvidences += parseInt(metricValue.evidences[evIndex].value);
-      }
-      metricValue.value = (totalValueEvidences / metricValue.evidences.length).toString();
 
       // If array metricValues has no values for the index yet, we initialize it
       if (metricValues[tsIndex] == null) {
@@ -187,6 +180,54 @@ function computerToRegistryParser (computerScope, mapping) {
   }
 
   return mappedScope;
+}
+
+function getMetrics(endpoint,ttl) {
+  return new Promise((resolve, reject) => {
+    try {
+      if (ttl < 0) { reject('Retries time surpased TTL.'); return; }
+      const realTimeout = 1000; // Minimum = firstTimeout
+      const firstTimeout = 10000;
+      setTimeout(() => {
+        axios.get(endpoint).then(response => {
+          let data = response.data;
+          let result = {};
+          for (index in data) {
+          let elem = data[index];
+            const service = elem.scope.service;
+            let record = elem.records[0];
+            let dataResult = {};
+            if (service in result) {
+              dataResult = result[service];
+              dataResult["value"] = dataResult["value"] + record.value;
+              let evidences = dataResult["evidences"];
+              dataResult["evidences"] = evidences.concat(record.evidences);
+            } else {
+              dataResult["scope"] =  elem.scope;
+              dataResult["value"] = record.value;
+              dataResult["evidences"] = record.evidences;
+            }
+            result[service] = dataResult; 
+          }
+          let resultList = [];
+          Object.keys(result).forEach(function(key, index) {
+            resultList.push(result[key])
+          });
+          resolve(resultList);
+        }).catch (err => {
+          if (err?.response?.status === 400) {
+            logger.error('Failed obtaining metrics from states-exporter: ' + err.response.data.message + '\nEndpoint: ' + endpoint);
+            resolve([]);
+          } else {
+            logger.error('Error when obtaining metrics from states-exporter: ' + '\nEndpoint: ' + endpoint + '- ERROR: ', err);
+            reject(err);
+          }
+        });
+      }, firstTimeout);
+    } catch (err) {
+      reject(err);
+    }
+  });
 }
 
 function getComputationV2 (infrastructurePath, computationURL, ttl) {
